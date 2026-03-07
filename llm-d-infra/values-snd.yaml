@@ -1,0 +1,4 @@
+gateway:
+  gatewayClassName: kgateway
+  # Keep a stable, explicit Gateway name for HTTPRoute parentRefs.
+  fullnameOverride: llm-d-infra-inference-gateway

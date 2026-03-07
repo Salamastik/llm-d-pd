@@ -1,0 +1,80 @@
+# LLM-d Pre-Modelservice Check
+
+המסמך הזה מיועד לבדיקה עד השלב שלפני יצירת modelservice.
+
+## 1) בדיקת releases
+
+```bash
+helm list -n llm-d-system
+```
+
+פלט תקין צריך לכלול לפחות:
+- `llm-d-infra` בסטטוס `deployed`
+- `inferencepool` בסטטוס `deployed`
+
+## 2) בדיקת Gateway
+
+```bash
+kubectl get gateway -n llm-d-system -o wide
+```
+
+פלט תקין:
+- יש Gateway בשם `llm-d-infra-inference-gateway`
+- `PROGRAMMED` הוא `True`
+
+## 3) בדיקת InferencePool API group ושם
+
+```bash
+kubectl get inferencepools.inference.networking.x-k8s.io -n llm-d-system
+kubectl get inferencepools.inference.networking.x-k8s.io inferencepool -n llm-d-system -o jsonpath='{.apiVersion}{"\n"}'
+```
+
+פלט תקין:
+- יש אובייקט בשם `inferencepool`
+- `apiVersion` הוא `inference.networking.x-k8s.io/v1alpha2`
+
+## 4) בדיקת EPP deployment
+
+```bash
+kubectl get deploy -n llm-d-system inferencepool-epp llm-d-infra-inference-gateway
+kubectl get pods -n llm-d-system -o wide
+```
+
+פלט תקין:
+- שני ה-deployments ב-`READY 1/1`
+- הפודים שלהם ב-`Running`
+
+## 5) בדיקת HTTPRoute ידני
+
+```bash
+kubectl get httproute -n llm-d-system -o wide
+kubectl get httproute llm-d-pd-disaggregation -n llm-d-system -o jsonpath='{range .status.parents[0].conditions[*]}{.type}={.status} {.reason} {.message}{"\n"}{end}'
+```
+
+פלט תקין:
+- קיים `HTTPRoute` בשם `llm-d-pd-disaggregation`
+- תנאים:
+  - `Accepted=True`
+  - `ResolvedRefs=True`
+
+## 6) אימות ערכי route בקובץ
+
+```bash
+kubectl get gateway -n llm-d-system
+kubectl get inferencepools.inference.networking.x-k8s.io -n llm-d-system
+```
+
+ב-`httproute.yaml` צריכים להיות:
+- `parentRefs.name: llm-d-infra-inference-gateway`
+- `backendRefs.name: inferencepool`
+- `backendRefs.group: inference.networking.x-k8s.io`
+
+## 7) מה נחשב תקין לפני modelservice
+
+גם בלי modelservice, המצב נחשב תקין אם:
+- Gateway + EPP רצים
+- InferencePool קיים
+- HTTPRoute הוא `Accepted=True` וגם `ResolvedRefs=True`
+
+אם `ResolvedRefs=False` או `InferencePool Accepted=Unknown`, עדיין יש חסימה בתשתית gateway/inference-extension.
+

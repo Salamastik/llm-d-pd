@@ -1,0 +1,162 @@
+multinode: false
+
+accelerator:
+  type: cpu
+
+modelArtifacts:
+  uri: "hf://Qwen/Qwen2.5-0.5B-Instruct"
+  size: 8Gi
+  authSecretName: ""
+  name: "Qwen/Qwen2.5-0.5B-Instruct"
+  labels:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/model: "qwen2.5-0.5b-instruct"
+
+routing:
+  servicePort: 8000
+  proxy:
+    enabled: true
+    image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.6.0
+    connector: nixlv2
+    secure: false
+    targetPort: 8200
+
+decode:
+  create: true
+  replicas: 1
+  parallelism:
+    tensor: 1
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cpu:v0.5.0
+      modelCommand: vllmServe
+      args:
+        - "--kv-transfer-config"
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both", "kv_buffer_device":"cpu"}'
+        - "--disable-uvicorn-access-log"
+        - "--max-model-len"
+        - "512"
+      env:
+        - name: VLLM_TARGET_DEVICE
+          value: "cpu"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "1"
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      ports:
+        - containerPort: 8200
+          name: vllm
+          protocol: TCP
+        - containerPort: 5600
+          name: nixl
+          protocol: TCP
+      resources:
+        limits:
+          memory: 5Gi
+          cpu: "2"
+        requests:
+          memory: 3Gi
+          cpu: "500m"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 20
+        periodSeconds: 20
+        timeoutSeconds: 5
+        failureThreshold: 90
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 20
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+
+prefill:
+  create: true
+  replicas: 1
+  parallelism:
+    tensor: 1
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cpu:v0.5.0
+      modelCommand: vllmServe
+      args:
+        - "--kv-transfer-config"
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both", "kv_buffer_device":"cpu"}'
+        - "--disable-uvicorn-access-log"
+        - "--max-model-len"
+        - "512"
+      env:
+        - name: VLLM_TARGET_DEVICE
+          value: "cpu"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "1"
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+        - containerPort: 5600
+          name: nixl
+          protocol: TCP
+      resources:
+        limits:
+          memory: 4Gi
+          cpu: "2"
+        requests:
+          memory: 3Gi
+          cpu: "500m"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 20
+        periodSeconds: 20
+        timeoutSeconds: 5
+        failureThreshold: 90
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 20
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
