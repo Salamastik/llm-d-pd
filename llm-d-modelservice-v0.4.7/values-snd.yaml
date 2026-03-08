@@ -9,12 +9,12 @@ multinode: false
 #     samplerArg: "0.1"
 
 modelArtifacts:
-  uri: "hf://moonshotai/kimi-k2.5"
+  uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/kimi-k2.5"
   size: 557Gi
   authSecretName: "llm-d-hf-token"
   name: "moonshotai/kimi-k2.5"
   labels:
-    app: "vllm-llama3-8b-instruct"
+    # Keep these aligned with inferencepool/values-snd.yaml:inferencePool.modelServers.matchLabels
     llm-d.ai/inference-serving: "true"
     llm-d.ai/guide: "pd-disaggregation"
     llm-d.ai/hardware-variant: "gpu"
@@ -37,9 +37,12 @@ decode:
     llm-d.ai/model: "kimi-k2.5"
     llm-d.ai/workload: "decode"
   annotations:
-    llm-d.ai/model-uri: "hf://moonshotai/kimi-k2.5"
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/kimi-k2.5"
   podAnnotations:
-    llm-d.ai/model-uri: "hf://moonshotai/kimi-k2.5"
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/kimi-k2.5"
+  # volumeMounts:
+  #   - name: model-storage
+  #     mountPath: /model-cache
   monitoring:
     podmonitor:
       enabled: true
@@ -126,9 +129,10 @@ prefill:
     llm-d.ai/model: "kimi-k2.5"
     llm-d.ai/workload: "prefill"
   annotations:
-    llm-d.ai/model-uri: "hf://moonshotai/kimi-k2.5"
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/kimi-k2.5"
   podAnnotations:
-    llm-d.ai/model-uri: "hf://moonshotai/kimi-k2.5"
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/kimi-k2.5"
+
   monitoring:
     podmonitor:
       enabled: true

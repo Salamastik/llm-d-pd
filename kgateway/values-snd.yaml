@@ -1,7 +1,7 @@
 inferenceExtension:
-  enabled: false
+  enabled: true
   autoProvision: false
 
 # Recommended by kgateway chart docs when enabling inferenceExtension.
 agentgateway:
-  enabled: false
+  enabled: true

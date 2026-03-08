@@ -10,10 +10,11 @@ inferencePool:
   apiVersion: inference.networking.k8s.io/v1
   modelServers:
     matchLabels:
-      # This key exists in the chart defaults and is merged, so it must match modelservice labels.
-      # app: vllm-llama3-8b-instruct
+      # Must match llm-d-modelservice-v0.4.7/values-snd.yaml:modelArtifacts.labels
+      app: "vllm-llama3-8b-instruct"
       llm-d.ai/inference-serving: "true"
       llm-d.ai/guide: "pd-disaggregation"
+      llm-d.ai/model: "kimi-k2.5"
 
 provider:
   name: none

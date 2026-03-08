@@ -2,6 +2,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: llm-d-pd-disaggregation
+  namespace: llm-d-system
 spec:
   parentRefs:
     - group: gateway.networking.k8s.io
@@ -13,6 +14,7 @@ spec:
           kind: InferencePool
           name: inferencepool
           namespace: llm-d-system
+          port: 8000
           weight: 1
 
   # parentRefs:
