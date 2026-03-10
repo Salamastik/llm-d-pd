@@ -54,18 +54,67 @@ decode:
       image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
       modelCommand: vllmServe
       args:
+        - "--trust-remote-code"
         - "--block-size"
         - "128"
         - "--kv-transfer-config"
-        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both", "kv_load_failure_policy":"fail"}'
         - "--disable-uvicorn-access-log"
+        # - "--data-parallel-hybrid-lb"
+        # - "--enable-expert-parallel"
+        # - "--async-scheduling"
+        # - "--enable-dbo"
+        # - "--dbo-decode-token-threshold"
+        # - "32"
+        # Keep EPLB disabled unless your vLLM/model quantization path supports it.
+        # - "--enable-eplb"
+        # - "--eplb-config"
+        # - '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"32","log_balancedness":"False"}'
+        # - "--compilation_config"
+        # - '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+        # - "--all2all-backend"
+        # - "deepep_low_latency"
         - "--max-model-len"
         - "32000"
       env:
+        - name: VLLM_MOE_DP_CHUNK_SIZE
+          value: "384"
+        - name: TRITON_LIBCUDA_PATH
+          value: /usr/lib64
+        - name: VLLM_SKIP_P2P_CHECK
+          value: "1"
+        - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+          value: "1"
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: NVIDIA_GDRCOPY
+          value: enabled
+        - name: NVSHMEM_REMOTE_TRANSPORT
+          value: ibgda
+        - name: NVSHMEM_IB_ENABLE_IBGDA
+          value: "true"
+        - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+          value: eth0
+        - name: GLOO_SOCKET_IFNAME
+          value: eth0
+        - name: NCCL_SOCKET_IFNAME
+          value: eth0
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
         - name: VLLM_NIXL_SIDE_CHANNEL_HOST
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+        - name: CUDA_CACHE_PATH
+          value: /var/cache/vllm/cuda
+        - name: CCACHE_DIR
+          value: /var/cache/vllm/ccache
+        - name: VLLM_CACHE_ROOT
+          value: /var/cache/vllm/vllm
+        - name: FLASHINFER_WORKSPACE_BASE
+          value: /var/cache/vllm/flashinfer
+        - name: HF_HUB_CACHE
+          value: /var/cache/huggingface
       ports:
         - containerPort: 8200
           name: vllm
@@ -88,6 +137,10 @@ decode:
           mountPath: /dev/shm
         - name: torch-compile-cache
           mountPath: /.cache
+        - name: hf-cache
+          mountPath: /var/cache/huggingface
+        - name: jit-cache
+          mountPath: /var/cache/vllm
       startupProbe:
         httpGet:
           path: /v1/models
@@ -119,12 +172,16 @@ decode:
         sizeLimit: "16Gi"
     - name: torch-compile-cache
       emptyDir: {}
+    - name: hf-cache
+      emptyDir: {}
+    - name: jit-cache
+      emptyDir: {}
 
 prefill:
   parallelism:
-    tensor: 1
+    tensor: 8
   create: true
-  replicas: 4
+  replicas: 1
   labels:
     llm-d.ai/model: "kimi-k2.5"
     llm-d.ai/workload: "prefill"
@@ -144,18 +201,65 @@ prefill:
       image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
       modelCommand: vllmServe
       args:
+        - "--trust-remote-code"
         - "--block-size"
         - "128"
         - "--kv-transfer-config"
-        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both", "kv_load_failure_policy":"fail"}'
         - "--disable-uvicorn-access-log"
+        # - "--data-parallel-hybrid-lb"
+        # - "--enable-expert-parallel"
+        # - "--async-scheduling"
+        # - "--enable-dbo"
+        # - "--dbo-prefill-token-threshold"
+        # - "32"
+        # Keep EPLB disabled unless your vLLM/model quantization path supports it.
+        # - "--enable-eplb"
+        # - "--eplb-config"
+        # - '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"32","log_balancedness":"False"}'
+        # - "--all2all-backend"
+        # - "deepep_high_throughput"
+        # - "--gpu-memory-utilization"
+        # - "0.75"
         - "--max-model-len"
         - "32000"
       env:
+        - name: TRITON_LIBCUDA_PATH
+          value: /usr/lib64
+        - name: VLLM_SKIP_P2P_CHECK
+          value: "1"
+        - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+          value: "1"
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: NVIDIA_GDRCOPY
+          value: enabled
+        - name: NVSHMEM_REMOTE_TRANSPORT
+          value: ibgda
+        - name: NVSHMEM_IB_ENABLE_IBGDA
+          value: "true"
+        # - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+        #   value: eth0
+        # - name: GLOO_SOCKET_IFNAME
+        #   value: eth0
+        # - name: NCCL_SOCKET_IFNAME
+        #   value: eth0
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
         - name: VLLM_NIXL_SIDE_CHANNEL_HOST
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+        - name: CUDA_CACHE_PATH
+          value: /var/cache/vllm/cuda
+        - name: CCACHE_DIR
+          value: /var/cache/vllm/ccache
+        - name: VLLM_CACHE_ROOT
+          value: /var/cache/vllm/vllm
+        - name: FLASHINFER_WORKSPACE_BASE
+          value: /var/cache/vllm/flashinfer
+        - name: HF_HUB_CACHE
+          value: /var/cache/huggingface
       ports:
         - containerPort: 8000
           name: vllm
@@ -178,6 +282,10 @@ prefill:
           mountPath: /dev/shm
         - name: torch-compile-cache
           mountPath: /.cache
+        - name: hf-cache
+          mountPath: /var/cache/huggingface
+        - name: jit-cache
+          mountPath: /var/cache/vllm
       startupProbe:
         httpGet:
           path: /v1/models
@@ -208,4 +316,8 @@ prefill:
         medium: Memory
         sizeLimit: "16Gi"
     - name: torch-compile-cache
+      emptyDir: {}
+    - name: hf-cache
+      emptyDir: {}
+    - name: jit-cache
       emptyDir: {}

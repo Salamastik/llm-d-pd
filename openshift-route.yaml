@@ -1,0 +1,18 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: llm-d-pd
+  namespace: llm-d-system
+  annotations:
+    # Long-running generation/stream responses can exceed default router timeout.
+    haproxy.router.openshift.io/timeout: 600s
+spec:
+  # Optional: set a fixed host if you want a known DNS name.
+  # host: llm-d-pd.apps.<your-openshift-domain>
+  to:
+    kind: Service
+    name: llm-d-infra-inference-gateway
+    weight: 100
+  port:
+    targetPort: 80
+  wildcardPolicy: None

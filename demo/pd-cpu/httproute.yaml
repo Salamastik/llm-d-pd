@@ -1,0 +1,26 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: pd-cpu-demo
+  namespace: llm-d-system
+spec:
+  hostnames:
+    - pd-demo.local
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: llm-d-infra-inference-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: ip-pd-cpu
+          namespace: llm-d-system
+          weight: 1
+      timeouts:
+        backendRequest: 0s
+        request: 0s
