@@ -1,0 +1,325 @@
+multinode: false
+
+# Distributed tracing configuration (OpenTelemetry)
+# tracing:
+#   enabled: true
+#   otlpEndpoint: "http://otel-collector:4317"
+#   sampling:
+#     sampler: "parentbased_traceidratio"
+#     samplerArg: "0.1"
+
+modelArtifacts:
+  uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/glm-4.7-fp8"
+  size: 557Gi
+  authSecretName: "llm-d-hf-token"
+  name: "zai-org/glm-4.7-fp8"
+  labels:
+    # Keep these aligned with inferencepool/values-snd.yaml:inferencePool.modelServers.matchLabels
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: "pd-disaggregation"
+    llm-d.ai/hardware-variant: "gpu"
+    llm-d.ai/accelerator-vendor: "nvidia"
+    llm-d.ai/model: "glm-4.7-fp8"
+
+routing:
+  servicePort: 8000
+  proxy:
+    image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.5.0
+    connector: nixlv2
+    secure: false
+
+decode:
+  parallelism:
+    tensor: 8
+  create: true
+  replicas: 1
+  labels:
+    llm-d.ai/model: "glm-4.7-fp8"
+    llm-d.ai/workload: "decode"
+  annotations:
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/glm-4.7-fp8"
+  podAnnotations:
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/glm-4.7-fp8"
+  # volumeMounts:
+  #   - name: model-storage
+  #     mountPath: /model-cache
+  monitoring:
+    podmonitor:
+      enabled: true
+      portName: "vllm"  # decode vLLM service port (from routing.proxy.targetPort)
+      path: "/metrics"
+      interval: "30s"
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
+      modelCommand: vllmServe
+      args:
+        - "--trust-remote-code"
+        - "--block-size"
+        - "128"
+        - "--kv-events-config"
+        - |-
+          {
+            "enable_kv_cache_events": true,
+            "publisher": "zmq",
+            "endpoint": "tcp://*:5557",
+            "topic": "kv@$(POD_IP)@zai-org/glm-4.7-fp8"
+          }
+        - "--kv-transfer-config"
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both", "kv_load_failure_policy":"fail"}'
+        - "--disable-uvicorn-access-log"
+        - "--max-model-len"
+        - "32000"
+      env:
+        - name: VLLM_MOE_DP_CHUNK_SIZE
+          value: "384"
+        - name: TRITON_LIBCUDA_PATH
+          value: /usr/lib64
+        - name: VLLM_SKIP_P2P_CHECK
+          value: "1"
+        - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+          value: "1"
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: NVIDIA_GDRCOPY
+          value: enabled
+        - name: NVSHMEM_REMOTE_TRANSPORT
+          value: ibgda
+        - name: NVSHMEM_IB_ENABLE_IBGDA
+          value: "true"
+        - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+          value: eth0
+        - name: GLOO_SOCKET_IFNAME
+          value: eth0
+        - name: NCCL_SOCKET_IFNAME
+          value: eth0
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: CUDA_CACHE_PATH
+          value: /var/cache/vllm/cuda
+        - name: CCACHE_DIR
+          value: /var/cache/vllm/ccache
+        - name: VLLM_CACHE_ROOT
+          value: /var/cache/vllm/vllm
+        - name: FLASHINFER_WORKSPACE_BASE
+          value: /var/cache/vllm/flashinfer
+        - name: HF_HUB_CACHE
+          value: /var/cache/huggingface
+      ports:
+        - containerPort: 8200
+          name: vllm
+          protocol: TCP
+        - containerPort: 5600
+          name: nixl
+          protocol: TCP
+      resources:
+        limits:
+          memory: 64Gi
+          cpu: "16"
+        requests:
+          memory: 64Gi
+          cpu: "16"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+        - name: torch-compile-cache
+          mountPath: /.cache
+        - name: hf-cache
+          mountPath: /var/cache/huggingface
+        - name: jit-cache
+          mountPath: /var/cache/vllm
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 15
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 60
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: "16Gi"
+    - name: torch-compile-cache
+      emptyDir: {}
+    - name: hf-cache
+      emptyDir: {}
+    - name: jit-cache
+      emptyDir: {}
+
+prefill:
+  parallelism:
+    tensor: 8
+  create: true
+  replicas: 1
+  labels:
+    llm-d.ai/model: "glm-4.7-fp8"
+    llm-d.ai/workload: "prefill"
+  annotations:
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/glm-4.7-fp8"
+  podAnnotations:
+    llm-d.ai/model-uri: "pvc://https://llm-d.ai/docs/guide/Installation/pd-disaggregation/glm-4.7-fp8"
+
+  monitoring:
+    podmonitor:
+      enabled: true
+      portName: "vllm"  # prefill vLLM service port (from routing.servicePort)
+      path: "/metrics"
+      interval: "30s"
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
+      modelCommand: vllmServe
+      args:
+        - "--trust-remote-code"
+        - "--block-size"
+        - "128"
+        - "--kv-events-config"
+        - |-
+          {
+            "enable_kv_cache_events": true,
+            "publisher": "zmq",
+            "endpoint": "tcp://*:5557",
+            "topic": "kv@$(POD_IP)@zai-org/glm-4.7-fp8"
+          }
+        - "--kv-transfer-config"
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both", "kv_load_failure_policy":"fail"}'
+        - "--disable-uvicorn-access-log"
+        # - "--data-parallel-hybrid-lb"
+        # - "--enable-expert-parallel"
+        # - "--async-scheduling"
+        # - "--enable-dbo"
+        # - "--dbo-prefill-token-threshold"
+        # - "32"
+        # Keep EPLB disabled unless your vLLM/model quantization path supports it.
+        # - "--enable-eplb"
+        # - "--eplb-config"
+        # - '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"32","log_balancedness":"False"}'
+        # - "--all2all-backend"
+        # - "deepep_high_throughput"
+        # - "--gpu-memory-utilization"
+        # - "0.75"
+        - "--max-model-len"
+        - "32000"
+      env:
+        - name: TRITON_LIBCUDA_PATH
+          value: /usr/lib64
+        - name: VLLM_SKIP_P2P_CHECK
+          value: "1"
+        - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+          value: "1"
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: NVIDIA_GDRCOPY
+          value: enabled
+        - name: NVSHMEM_REMOTE_TRANSPORT
+          value: ibgda
+        - name: NVSHMEM_IB_ENABLE_IBGDA
+          value: "true"
+        # - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+        #   value: eth0
+        # - name: GLOO_SOCKET_IFNAME
+        #   value: eth0
+        # - name: NCCL_SOCKET_IFNAME
+        #   value: eth0
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: CUDA_CACHE_PATH
+          value: /var/cache/vllm/cuda
+        - name: CCACHE_DIR
+          value: /var/cache/vllm/ccache
+        - name: VLLM_CACHE_ROOT
+          value: /var/cache/vllm/vllm
+        - name: FLASHINFER_WORKSPACE_BASE
+          value: /var/cache/vllm/flashinfer
+        - name: HF_HUB_CACHE
+          value: /var/cache/huggingface
+      ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+        - containerPort: 5600
+          name: nixl
+          protocol: TCP
+      resources:
+        limits:
+          memory: 64Gi
+          cpu: "8"
+        requests:
+          memory: 64Gi
+          cpu: "8"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+        - name: torch-compile-cache
+          mountPath: /.cache
+        - name: hf-cache
+          mountPath: /var/cache/huggingface
+        - name: jit-cache
+          mountPath: /var/cache/vllm
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 15
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 60
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: "16Gi"
+    - name: torch-compile-cache
+      emptyDir: {}
+    - name: hf-cache
+      emptyDir: {}
+    - name: jit-cache
+      emptyDir: {}
