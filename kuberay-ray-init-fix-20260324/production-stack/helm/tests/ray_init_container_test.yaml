@@ -1,0 +1,70 @@
+suite: test ray init container configuration
+templates:
+  - ray-cluster.yaml
+tests:
+  - it: should render ray initContainers, volumes, and mounts for Ray clusters
+    set:
+      servingEngineSpec:
+        enableEngine: true
+        modelSpec:
+          - name: "ray-model"
+            repository: "vllm/vllm-openai"
+            tag: "latest"
+            modelURL: "Qwen/Qwen2.5-0.5B-Instruct"
+            replicaCount: 1
+            requestCPU: 1
+            requestMemory: "1Gi"
+            limitCPU: "2"
+            limitMemory: "2Gi"
+            env:
+              - name: PATH
+                value: "/opt/ray-deps/bin:/usr/local/bin:/usr/bin:/bin"
+              - name: PYTHONPATH
+                value: "/opt/ray-deps/site-packages"
+            extraVolumes:
+              - name: ray-deps
+                emptyDir: {}
+            extraVolumeMounts:
+              - name: ray-deps
+                mountPath: /opt/ray-deps
+            raySpec:
+              initContainers:
+                - name: install-ray
+                  image: "vllm/vllm-openai:latest"
+                  command:
+                    - /bin/bash
+                    - -lc
+                    - python3 -m pip install --prefix /opt/ray-deps "ray[default]"
+                  volumeMounts:
+                    - name: ray-deps
+                      mountPath: /opt/ray-deps
+              headNode:
+                requestCPU: 1
+                requestMemory: "1Gi"
+                limitCPU: "2"
+                limitMemory: "2Gi"
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: spec.headGroupSpec.template.spec.initContainers[0].name
+          value: install-ray
+      - documentIndex: 0
+        equal:
+          path: spec.workerGroupSpecs[0].template.spec.initContainers[0].name
+          value: install-ray
+      - documentIndex: 0
+        equal:
+          path: spec.headGroupSpec.template.spec.volumes[2].name
+          value: ray-deps
+      - documentIndex: 0
+        equal:
+          path: spec.workerGroupSpecs[0].template.spec.volumes[2].name
+          value: ray-deps
+      - documentIndex: 0
+        equal:
+          path: spec.headGroupSpec.template.spec.containers[0].volumeMounts[2].mountPath
+          value: /opt/ray-deps
+      - documentIndex: 0
+        equal:
+          path: spec.workerGroupSpecs[0].template.spec.containers[0].volumeMounts[0].mountPath
+          value: /opt/ray-deps

@@ -1,0 +1,80 @@
+servingEngineSpec:
+  runtimeClassName: ""
+  imagePullPolicy: IfNotPresent
+  modelSpec:
+    - name: "qwen25-cpu-raycluster"
+      repository: "vllm/vllm-openai"
+      tag: "latest"
+      modelURL: "Qwen/Qwen2.5-0.5B-Instruct"
+
+      replicaCount: 1
+
+      requestCPU: 1
+      requestMemory: "2200Mi"
+      limitCPU: "2"
+      limitMemory: "3Gi"
+      requestGPU: 0
+
+      env:
+        - name: VLLM_TARGET_DEVICE
+          value: "cpu"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "1"
+        - name: HF_HUB_DISABLE_XET
+          value: "1"
+        - name: PATH
+          value: "/opt/ray-deps/local/bin:/opt/ray-deps/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        - name: PYTHONPATH
+          value: "/opt/ray-deps/local/lib/python3.12/dist-packages:/opt/ray-deps/lib/python3.12/site-packages"
+
+      extraVolumes:
+        - name: ray-deps
+          emptyDir: {}
+
+      extraVolumeMounts:
+        - name: ray-deps
+          mountPath: /opt/ray-deps
+
+      vllmConfig:
+        tensorParallelSize: 1
+        pipelineParallelSize: 2
+        maxModelLen: 512
+        maxNumSeqs: 8
+        extraArgs:
+          - "--enforce-eager"
+          - "--disable-uvicorn-access-log"
+
+      shmSize: "1Gi"
+
+      raySpec:
+        initContainers:
+          - name: install-ray
+            image: "vllm/vllm-openai:latest"
+            imagePullPolicy: IfNotPresent
+            command:
+              - /bin/bash
+              - -lc
+              - |
+                set -euo pipefail
+                rm -rf /opt/ray-deps/*
+                python3 -m pip install --no-cache-dir --prefix /opt/ray-deps "ray[default]"
+                export PYTHONPATH="/opt/ray-deps/local/lib/python3.12/dist-packages:/opt/ray-deps/lib/python3.12/site-packages"
+                python3 -c 'import ray; print(ray.__version__)'
+            volumeMounts:
+              - name: ray-deps
+                mountPath: /opt/ray-deps
+        headNode:
+          requestCPU: 1
+          requestMemory: "2400Mi"
+          limitCPU: "2"
+          limitMemory: "3Gi"
+          requestGPU: 0
+
+      hf_token:
+        secretName: "hf-token"
+        secretKey: "token"
+
+routerSpec:
+  enableRouter: false
