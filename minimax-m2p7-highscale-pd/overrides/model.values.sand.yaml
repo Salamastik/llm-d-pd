@@ -1,0 +1,308 @@
+# =============================================================================
+# LAYER 3 — MODEL SERVER override  (chart: llm-d-modelservice v0.4.7, vendored)
+# =============================================================================
+# Layer this on top of the umbrella defaults:
+#   helm template m2p7 . \
+#     -f overrides/gateway.values.sand.yaml \
+#     -f overrides/router.values.sand.yaml \
+#     -f overrides/model.values.sand.yaml
+#
+# Optimizations enabled here (all of them):
+#   * Prefill/Decode disaggregation .......... NIXL connector (kv_both)
+#   * Tiered KV CPU offloading ............... vLLM OffloadingConnector (100 GiB/pod)
+#       -> NIXL + Offloading are stacked via vLLM MultiConnector
+#   * Prefix caching ......................... enabled (block-size 128) + emits KV events
+#   * MoE wide expert parallelism ............ --enable-expert-parallel
+#   * Chunked prefill ........................ --enable-chunked-prefill
+#   * FP8 KV cache ........................... --kv-cache-dtype fp8
+#   * CUDA graphs ............................ cudagraph_mode PIECEWISE
+#
+# HARDWARE: 4x H100 (80 GiB) per instance, TP=4, for BOTH prefill and decode.
+#   MiniMax-M2.7 is ~229B params. To fit on 4xH100 (320 GiB) you MUST serve an
+#   FP8 weight checkpoint (~229 GiB) — BF16 (~458 GiB) does NOT fit on 4 GPUs.
+#   See README "FP8 memory math". Point modelArtifacts.uri at an FP8 checkpoint.
+# =============================================================================
+
+modelservice:
+  multinode: false
+  modelArtifacts:
+    # NOTE: serve an FP8 checkpoint here to fit 4xH100. If MiniMaxAI publishes an
+    # FP8 repo (e.g. MiniMax-M2.7-FP8), use it. Otherwise quantize, or use >4 GPUs.
+    uri: "hf://MiniMaxAI/MiniMax-M2.7"
+    size: 320Gi
+    authSecretName: "hf-token"
+    name: "MiniMaxAI/MiniMax-M2.7"
+    labels:
+      llm-d.ai/inference-serving: "true"
+      llm-d.ai/guide: "minimax-m2p7-highscale-pd"
+      llm-d.ai/accelerator-variant: "gpu"
+      llm-d.ai/accelerator-vendor: "nvidia"
+      llm-d.ai/model: "MiniMax-M2.7"
+  accelerator:
+    type: nvidia
+  routing:
+    servicePort: 8000
+    proxy:
+      image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.6.0
+      connector: nixlv2
+      secure: false
+      zapLogLevel: error
+
+  # ----- DECODE: more parallelism, fewer-but-scaled replicas (latency-bound) -----
+  decode:
+    parallelism:
+      tensor: 4            # 4x H100 per decode pod
+    create: true
+    replicas: 8           # HIGH SCALE knob (8 x TP4 = 32 H100 for decode)
+    monitoring:
+      podmonitor:
+        enabled: true
+        portName: "vllm"
+        path: "/metrics"
+        interval: "30s"
+    containers:
+      - name: "vllm"
+        image: ghcr.io/llm-d/llm-d-cuda:v0.5.1   # README: confirm this image supports M2.7
+        modelCommand: vllmServe
+        args:
+          - "--trust-remote-code"
+          - "--block-size"
+          - "128"
+          - "--max-model-len"
+          - "131072"
+          - "--gpu-memory-utilization"
+          - "0.92"
+          # ---- MoE wide expert parallelism + chunked prefill + FP8 KV ----
+          - "--enable-expert-parallel"
+          - "--enable-chunked-prefill"
+          - "--kv-cache-dtype"
+          - "fp8"
+          - "--enable-prefix-caching"
+          # ---- MiniMax M2 tool/reasoning parsers ----
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser"
+          - "minimax_m2"
+          - "--reasoning-parser"
+          - "minimax_m2_append_think"
+          # ---- P/D disaggregation (NIXL) STACKED WITH CPU offload via MultiConnector ----
+          - "--kv-transfer-config"
+          - '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":107374182400}}]}}'
+          - "--kv-events-config"
+          - |
+            {
+              "enable_kv_cache_events": true,
+              "publisher": "zmq",
+              "endpoint": "tcp://$(GAIE_RELEASE_NAME)-epp.$(NAMESPACE).svc.cluster.local:5557",
+              "topic": "kv@$(POD_IP)@MiniMaxAI/MiniMax-M2.7"
+            }
+          - "--disable-uvicorn-access-log"
+          - "--compilation-config"
+          - '{"cudagraph_mode":"PIECEWISE"}'
+        env:
+          - name: GAIE_RELEASE_NAME
+            value: "{{ .Release.Name }}"
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: SAFETENSORS_FAST_GPU
+            value: "1"
+          - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: VLLM_LOGGING_LEVEL
+            value: INFO
+          - name: TRITON_CACHE_DIR
+            value: /.triton-cache
+        ports:
+          - containerPort: 8200
+            name: vllm
+            protocol: TCP
+          - containerPort: 5600
+            name: nixl
+            protocol: TCP
+        resources:
+          limits:
+            nvidia.com/gpu: "4"
+            memory: 320Gi          # > 100 GiB CPU-offload buffer + weights staging
+            cpu: "48"
+          requests:
+            nvidia.com/gpu: "4"
+            memory: 320Gi
+            cpu: "48"
+        mountModelVolume: true
+        volumeMounts:
+          - name: metrics-volume
+            mountPath: /.config
+          - name: shm
+            mountPath: /dev/shm
+          - name: torch-compile-cache
+            mountPath: /.cache
+          - name: triton-cache
+            mountPath: /.triton-cache
+        startupProbe:
+          httpGet:
+            path: /v1/models
+            port: vllm
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 80
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: vllm
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /v1/models
+            port: vllm
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+    volumes:
+      - name: metrics-volume
+        emptyDir: {}
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "32Gi"
+      - name: torch-compile-cache
+        emptyDir: {}
+      - name: triton-cache
+        emptyDir: {}
+
+  # ----- PREFILL: TP=4, scaled replicas (compute-bound) -----
+  prefill:
+    parallelism:
+      tensor: 4            # 4x H100 per prefill pod
+    create: true
+    replicas: 4           # HIGH SCALE knob (4 x TP4 = 16 H100 for prefill)
+    monitoring:
+      podmonitor:
+        enabled: true
+        portName: "vllm"
+        path: "/metrics"
+        interval: "30s"
+    containers:
+      - name: "vllm"
+        image: ghcr.io/llm-d/llm-d-cuda:v0.5.1
+        modelCommand: vllmServe
+        args:
+          - "--trust-remote-code"
+          - "--block-size"
+          - "128"
+          - "--max-model-len"
+          - "131072"
+          - "--gpu-memory-utilization"
+          - "0.90"
+          - "--enable-expert-parallel"
+          - "--enable-chunked-prefill"
+          - "--kv-cache-dtype"
+          - "fp8"
+          - "--enable-prefix-caching"
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser"
+          - "minimax_m2"
+          - "--reasoning-parser"
+          - "minimax_m2_append_think"
+          - "--kv-transfer-config"
+          - '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":107374182400}}]}}'
+          - "--kv-events-config"
+          - |
+            {
+              "enable_kv_cache_events": true,
+              "publisher": "zmq",
+              "endpoint": "tcp://$(GAIE_RELEASE_NAME)-epp.$(NAMESPACE).svc.cluster.local:5557",
+              "topic": "kv@$(POD_IP)@MiniMaxAI/MiniMax-M2.7"
+            }
+          - "--disable-uvicorn-access-log"
+          - "--compilation-config"
+          - '{"cudagraph_mode":"PIECEWISE"}'
+        env:
+          - name: GAIE_RELEASE_NAME
+            value: "{{ .Release.Name }}"
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: SAFETENSORS_FAST_GPU
+            value: "1"
+          - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: VLLM_LOGGING_LEVEL
+            value: INFO
+          - name: TRITON_CACHE_DIR
+            value: /.triton-cache
+        ports:
+          - containerPort: 8000
+            name: vllm
+            protocol: TCP
+          - containerPort: 5600
+            name: nixl
+            protocol: TCP
+        resources:
+          limits:
+            nvidia.com/gpu: "4"
+            memory: 320Gi
+            cpu: "48"
+          requests:
+            nvidia.com/gpu: "4"
+            memory: 320Gi
+            cpu: "48"
+        mountModelVolume: true
+        volumeMounts:
+          - name: metrics-volume
+            mountPath: /.config
+          - name: shm
+            mountPath: /dev/shm
+          - name: torch-compile-cache
+            mountPath: /.cache
+          - name: triton-cache
+            mountPath: /.triton-cache
+        startupProbe:
+          httpGet:
+            path: /v1/models
+            port: vllm
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 80
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: vllm
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /v1/models
+            port: vllm
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+    volumes:
+      - name: metrics-volume
+        emptyDir: {}
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "32Gi"
+      - name: torch-compile-cache
+        emptyDir: {}
+      - name: triton-cache
+        emptyDir: {}

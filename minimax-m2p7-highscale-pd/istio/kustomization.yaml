@@ -1,0 +1,54 @@
+# =============================================================================
+# Gateway overlay — references the ORIGINAL llm-d Istio recipe verbatim
+# (istio/original/, copied from guides/recipes/gateway/istio) and layers a
+# high-scale override on top. Never edit original/.
+#
+# Render / apply:
+#   kubectl kustomize istio/ -f istio/kustomization.sand.yaml   # render
+#   kubectl apply -k istio/ -n <namespace>                      # apply
+#   (kustomize uses 'kustomization.yaml'; this file is named .sand.yaml to keep
+#    the override explicit — rename or symlink to kustomization.yaml to apply,
+#    or pass it via `kubectl kustomize --kustomization`-style tooling.)
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - original
+
+patches:
+  # High-scale gateway proxy: bump istio-proxy CPU/mem and worker concurrency so
+  # the Envoy data plane keeps up with very high QPS to the disaggregated pool.
+  - target:
+      kind: ConfigMap
+      name: llm-d-inference-gateway
+    patch: |
+      - op: replace
+        path: /data/deployment
+        value: |
+          spec:
+            replicas: 3
+            template:
+              spec:
+                containers:
+                - name: istio-proxy
+                  args:
+                    - proxy
+                    - router
+                    - --domain
+                    - $(POD_NAMESPACE).svc.cluster.local
+                    - --proxyLogLevel
+                    - warn
+                    - --proxyComponentLogLevel
+                    - misc:warn
+                    - --log_output_level
+                    - default:warn
+                    - --concurrency
+                    - "8"
+                  resources:
+                    limits:
+                      cpu: "16"
+                      memory: 32Gi
+                    requests:
+                      cpu: "4"
+                      memory: 8Gi

@@ -1,0 +1,37 @@
+# =============================================================================
+# LAYER 1 — GATEWAY override (Istio provider, InferencePool v1)
+# =============================================================================
+# Selects the Istio gateway provider for the InferencePool and applies a
+# high-scale Istio DestinationRule (large connection pools + long timeouts so a
+# saturating benchmark / production load is not throttled by the mesh proxy).
+#
+# REQUIRES Istio >= 1.28 (1.28.6 recommended). Istio 1.27.x only understands the
+# ALPHA InferencePool (inference.networking.x-k8s.io/v1alpha2); these charts emit
+# the STABLE inference.networking.k8s.io/v1 pool, which 1.27.x ignores. See README.
+#
+# The Gateway object + GatewayClass + Istio control plane itself are installed
+# out-of-band (kustomize/istioctl) — see ../istio/. This file only wires the
+# InferencePool/HTTPRoute produced by the chart to that Gateway.
+# =============================================================================
+
+gaie:
+  provider:
+    name: istio
+    istio:
+      destinationRule:
+        trafficPolicy:
+          connectionPool:
+            http:
+              http1MaxPendingRequests: 256000
+              maxRequestsPerConnection: 256000
+              http2MaxRequests: 256000
+              idleTimeout: "900s"
+            tcp:
+              maxConnections: 256000
+              maxConnectionDuration: "1800s"
+              connectTimeout: "900s"
+
+httpRoute:
+  enabled: true
+  nameOverride: ""
+  pathPrefix: "/"
