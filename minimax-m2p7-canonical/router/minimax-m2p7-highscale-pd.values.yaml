@@ -1,0 +1,48 @@
+# Router (EPP) override for the llm-d-router-gateway chart (v0.9.0).
+# Layer on top of recipes/router/base.values.yaml + recipes/router/features/httproute-flags.yaml.
+# Schema: router.epp (EndpointPickerConfig apiVersion llm-d.ai/v1alpha1).
+#
+# Composes: P/D-aware scheduling (disagg profile + prefix-based decider) +
+# precise prefix-cache routing (KV-events scorer) + load scorers.
+router:
+  epp:
+    replicas: 2                              # HA at high scale
+    pluginsConfigFile: "pd-precise-config.yaml"
+    pluginsCustomConfig:
+      pd-precise-config.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: disagg-headers-handler
+        - type: prefix-based-pd-decider          # split P/D by cached-prefix length
+        - type: disagg-profile-handler
+          parameters:
+            deciderPluginName: prefix-based-pd-decider
+            threshold: 256                        # tune to your ISL/OSL
+        - type: prefill-filter
+        - type: decode-filter
+        - type: precise-prefix-cache-scorer       # KV-events based (precise)
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: active-request-scorer
+        schedulingProfiles:
+        - name: prefill
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: precise-prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+        - name: decode
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: precise-prefix-cache-scorer
+            weight: 3
+          - pluginRef: active-request-scorer
+            weight: 2
+
+  modelServers:
+    matchLabels:
+      llm-d.ai/guide: "minimax-m2p7-highscale-pd"

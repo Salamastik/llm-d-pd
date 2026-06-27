@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Standalone build: the canonical PD bases + image components are pulled by
+# REMOTE ref from the upstream llm-d repo, so this overlay builds anywhere
+# (no local llm-d checkout needed). Pin ?ref= to a release tag for reproducibility.
+#
+# If you ARE inside an llm-d checkout, you can swap these for relative paths:
+#   ../../../guides/recipes/modelserver/base/single-host/pd/vllm
+#   ../../../guides/recipes/modelserver/components/images/gpu-vllm
+#   ../../../guides/recipes/modelserver/components/images/routing-sidecar
+resources:
+  - github.com/llm-d/llm-d//guides/recipes/modelserver/base/single-host/pd/vllm?ref=main
+
+namePrefix: minimax-m2p7-
+
+components:
+  - github.com/llm-d/llm-d//guides/recipes/modelserver/components/images/gpu-vllm?ref=main
+  - github.com/llm-d/llm-d//guides/recipes/modelserver/components/images/routing-sidecar?ref=main
+
+# Pin the vLLM server image to a build that supports MiniMax-M2 (tool/reasoning
+# parsers) AND OffloadingConnector/MultiConnector. gpu-vllm default is v0.23.0.
+images:
+  - name: vllm/vllm-openai
+    newTag: v0.23.0
+
+labels:
+  - pairs:
+      llm-d.ai/model: minimax-m2p7
+      llm-d.ai/guide: minimax-m2p7-highscale-pd
+      llm-d.ai/accelerator-variant: gpu
+      llm-d.ai/accelerator-vendor: nvidia
+      llm-d.ai/engine-type: vllm
+    includeSelectors: true
+    includeTemplates: true
+
+patches:
+  - path: patch-decode.yaml
+  - path: patch-prefill.yaml
