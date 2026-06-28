@@ -28,22 +28,15 @@ spec:
             # Verified shape vs vLLM multi_connector.py (connectors[] of KVTransferConfig).
             - "--kv-transfer-config"
             - '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":107374182400}}]}}'
-            # KV events feed the EPP precise-prefix-cache-scorer. $(VAR) is expanded by k8s.
-            - "--kv-events-config"
-            - '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"tcp://$(GAIE_RELEASE_NAME)-epp.$(NAMESPACE).svc.cluster.local:5557","topic":"kv@$(POD_IP)@MiniMaxAI/MiniMax-M2.7"}'
             - "--compilation-config={\"cudagraph_mode\":\"PIECEWISE\"}"   # CUDA graphs
+            # NOTE: the approximate prefix-cache-scorer needs NO --kv-events-config.
+            # For PRECISE routing, add it per IDEAL-deploy-guide.md §4.3 (tcp://*:5556).
           env:
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: llm-d-hf-token
                   key: HF_TOKEN
-            - name: GAIE_RELEASE_NAME
-              value: "minimax-m2p7-highscale-pd"   # the router (EPP) helm release name
-            - name: NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
             - name: POD_IP
               valueFrom:
                 fieldRef:

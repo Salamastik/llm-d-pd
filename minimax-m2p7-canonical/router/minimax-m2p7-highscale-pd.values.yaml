@@ -1,27 +1,37 @@
 # Router (EPP) override for the llm-d-router-gateway chart (v0.9.0).
-# Layer on top of recipes/router/base.values.yaml + recipes/router/features/httproute-flags.yaml.
-# Schema: router.epp (EndpointPickerConfig apiVersion llm-d.ai/v1alpha1).
+# EPP image: llm-d-router-endpoint-picker:v0.9.0 (chart default; renamed from
+# llm-d-inference-scheduler). Layer on top of recipes/router/base.values.yaml +
+# recipes/router/features/httproute-flags.yaml.
 #
-# Composes: P/D-aware scheduling (disagg profile + prefix-based decider) +
-# precise prefix-cache routing (KV-events scorer) + load scorers.
+# Routing = the SHIPPED pd-disaggregation EPP config (llm-d.ai/v1alpha1):
+#   * P/D-aware scheduling (disagg-profile-handler + decider, prefill/decode profiles)
+#   * prefix-aware routing via the APPROXIMATE `prefix-cache-scorer`
+#       → needs NO tokenizer sidecar and NO KV-events plumbing on the model server
+#   * load-aware: queue-scorer + kv-cache-utilization-scorer + active-request-scorer
+#
+# For PRECISE (KV-events) prefix routing instead, see the optional upgrade in
+# IDEAL-deploy-guide.md §4.3 (adds a `vllm launch render` Service + token-producer
+# + precise-prefix-cache-producer + per-pod ZMQ :5556 / discoverPods). Composing
+# precise routing WITH P/D disaggregation is not a shipped combination — validate.
 router:
   epp:
-    replicas: 2                              # HA at high scale
-    pluginsConfigFile: "pd-precise-config.yaml"
+    replicas: 2                              # active-active HA at high scale
+    pluginsConfigFile: "pd-config.yaml"
     pluginsCustomConfig:
-      pd-precise-config.yaml: |
+      pd-config.yaml: |
         apiVersion: llm-d.ai/v1alpha1
         kind: EndpointPickerConfig
         plugins:
         - type: disagg-headers-handler
-        - type: prefix-based-pd-decider          # split P/D by cached-prefix length
+        - type: prefix-based-pd-decider          # disaggregate only when the
+                                                 # non-cached prefix is large enough
         - type: disagg-profile-handler
           parameters:
             deciderPluginName: prefix-based-pd-decider
             threshold: 256                        # tune to your ISL/OSL
         - type: prefill-filter
         - type: decode-filter
-        - type: precise-prefix-cache-scorer       # KV-events based (precise)
+        - type: prefix-cache-scorer              # approximate, prefix-aware (no tokenizer)
         - type: queue-scorer
         - type: kv-cache-utilization-scorer
         - type: active-request-scorer
@@ -29,7 +39,7 @@ router:
         - name: prefill
           plugins:
           - pluginRef: prefill-filter
-          - pluginRef: precise-prefix-cache-scorer
+          - pluginRef: prefix-cache-scorer
             weight: 3
           - pluginRef: queue-scorer
             weight: 2
@@ -38,10 +48,10 @@ router:
         - name: decode
           plugins:
           - pluginRef: decode-filter
-          - pluginRef: precise-prefix-cache-scorer
-            weight: 3
           - pluginRef: active-request-scorer
             weight: 2
+          - pluginRef: prefix-cache-scorer
+            weight: 3
 
   modelServers:
     matchLabels:

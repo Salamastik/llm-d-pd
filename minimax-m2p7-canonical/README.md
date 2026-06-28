@@ -16,7 +16,7 @@ minimax-m2p7-canonical/
 ├── router/
 │   ├── base.values.yaml                        # vendored upstream (recipes/router)
 │   ├── httproute-flags.yaml                     # vendored upstream
-│   └── minimax-m2p7-highscale-pd.values.yaml    # P/D + precise prefix + load (router.epp)
+│   └── minimax-m2p7-highscale-pd.values.yaml    # P/D + approximate prefix + load (router.epp)
 └── modelserver/
     ├── kustomization.yaml                       # REMOTE bases → builds standalone
     ├── patch-prefill.yaml                        # TP=4, ×4, M2.7 flags, MultiConnector (NIXL+CPU offload)
@@ -61,7 +61,7 @@ kubectl apply -k modelserver/ -n ${NAMESPACE}
 | Artifact | Tool | Result |
 | --- | --- | --- |
 | `modelserver/` (remote bases) | `kubectl kustomize` | ✅ 2 Deployments + SA; TP=4; GPU=4; `vllm/vllm-openai:v0.23.0` + `llm-d-router-disagg-sidecar:v0.9.0` |
-| `router/…values.yaml` | `helm template llm-d-router-gateway:v0.9.0` | ✅ InferencePool **v1**, HTTPRoute, DestinationRule, EPP plugins (disagg + precise prefix) |
+| `router/…values.yaml` | `helm template llm-d-router-gateway:v0.9.0` | ✅ InferencePool **v1**, HTTPRoute, DestinationRule, EPP plugins (disagg + approximate prefix) |
 
 > ⚠️ One composed knob is **not** covered by any llm-d guide: NIXL (P/D) +
 > `OffloadingConnector` (CPU) via `MultiConnector`. Shape verified vs vLLM source,

@@ -25,16 +25,22 @@ chart → model-server Kustomize overlays.**
 | KV offload | CPU tier via vLLM `OffloadingConnector` | [`tiered-prefix-cache`](../guides/tiered-prefix-cache/README.md) |
 | Gateway | **Istio 1.28.6** (NOT 1.27.x) | InferencePool **v1** needs Istio ≥1.28 (see §1.2) |
 
-### Canonical versions (from `guides/env.sh` + recipe components)
+### Canonical versions — aligned to the **llm-d v0.8.0** component summary
 
 ```bash
 GATEWAY_API_VERSION=v1.5.1
-GAIE_VERSION=v1.5.0                                   # InferencePool v1 manifests
+GAIE_VERSION=v1.5.0                                   # InferencePool v1 manifests; charts now from llm-d OCI registry
 ROUTER_CHART_VERSION=v0.9.0
 ROUTER_GATEWAY_CHART=oci://ghcr.io/llm-d/charts/llm-d-router-gateway
-ROUTING_SIDECAR_IMAGE=ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.9.0  # NOT the old llm-d-routing-sidecar:v0.6.0
-ISTIO_VERSION=1.28.6
 ```
+
+| Component (llm-d v0.8.0) | Pinned here | Note |
+| --- | --- | --- |
+| `llm-d-router-endpoint-picker` (**EPP**) | **v0.9.0** | core EPP image+chart; **renamed** from `llm-d-inference-scheduler`. Chart default of `llm-d-router-gateway:v0.9.0` — used as-is. |
+| `llm-d-router-disagg-sidecar` | **v0.9.0** | P/D routing sidecar; renamed from `llm-d-routing-sidecar`. Pinned via the `routing-sidecar` component. |
+| `vllm/vllm-openai` (server) | **v0.23.0** | `gpu-vllm` component default; equals `llm-d-cuda:v0.8.0` (vLLM v0.23.0, CUDA 13). |
+| `llm-d-uds-tokenizer` | **vllm-v0.23.0** | **only needed for the optional PRECISE routing upgrade** (§4.3); the default approximate path needs no tokenizer. |
+| Istio | **1.28.6** | InferencePool **v1** requires Istio ≥1.28. |
 
 > **vLLM image:** the canonical PD overlay's `gpu-vllm` component pins
 > **`vllm/vllm-openai:v0.23.0`** (upstream vLLM — *not* `llm-d-cuda`). Confirm
@@ -125,29 +131,31 @@ ConfigMap allows. (Pattern from the istio recipe's `configmap.yaml`.)
 > Command shape from [`pd-disaggregation` → Gateway Mode](../guides/pd-disaggregation/README.md);
 > base values from [`recipes/router/base.values.yaml`](../guides/recipes/router/base.values.yaml).
 
-Create `router/${GUIDE_NAME}.values.yaml` — this is the **router-gateway chart
-(v0.9.0) `router.epp` schema** (`apiVersion: llm-d.ai/v1alpha1`), composing **P/D
-profiles + precise prefix-cache + load scorers**:
+Create `router/${GUIDE_NAME}.values.yaml` — the **router-gateway chart (v0.9.0)
+`router.epp` schema** (`apiVersion: llm-d.ai/v1alpha1`). The default uses the
+**shipped pd-disaggregation EPP config**: P/D profiles + the **approximate**
+`prefix-cache-scorer` (prefix-aware, **needs no tokenizer and no KV-events**) +
+load scorers. (For precise KV-events routing, see the optional upgrade in §4.3.)
 
 ```yaml
 router:
   epp:
-    replicas: 2                         # HA at high scale
-    pluginsConfigFile: "pd-precise-config.yaml"
+    replicas: 2                         # active-active HA at high scale
+    pluginsConfigFile: "pd-config.yaml"
     pluginsCustomConfig:
-      pd-precise-config.yaml: |
+      pd-config.yaml: |
         apiVersion: llm-d.ai/v1alpha1
         kind: EndpointPickerConfig
         plugins:
         - type: disagg-headers-handler
-        - type: prefix-based-pd-decider          # route by cached-prefix length
+        - type: prefix-based-pd-decider          # disaggregate by non-cached prefix length
         - type: disagg-profile-handler
           parameters:
             deciderPluginName: prefix-based-pd-decider
             threshold: 256                        # P/D split; tune to ISL/OSL
         - type: prefill-filter
         - type: decode-filter
-        - type: precise-prefix-cache-scorer       # KV-events based (precise)
+        - type: prefix-cache-scorer              # approximate, prefix-aware (no tokenizer)
         - type: queue-scorer
         - type: kv-cache-utilization-scorer
         - type: active-request-scorer
@@ -155,7 +163,7 @@ router:
         - name: prefill
           plugins:
           - pluginRef: prefill-filter
-          - pluginRef: precise-prefix-cache-scorer
+          - pluginRef: prefix-cache-scorer
             weight: 3
           - pluginRef: queue-scorer
             weight: 2
@@ -164,7 +172,7 @@ router:
         - name: decode
           plugins:
           - pluginRef: decode-filter
-          - pluginRef: precise-prefix-cache-scorer
+          - pluginRef: prefix-cache-scorer
             weight: 3
           - pluginRef: active-request-scorer
             weight: 2
@@ -173,11 +181,12 @@ router:
       llm-d.ai/guide: "minimax-m2p7-highscale-pd"
 ```
 
-> The precise (KV-events) scorer + its tokenizer sidecar/ZMQ wiring follow
-> [`precise-prefix-cache-routing`](../guides/precise-prefix-cache-routing/README.md).
-> If your router build doesn't ship `precise-prefix-cache-scorer`, fall back to
-> the approximate `prefix-cache-scorer` used in the stock
-> [`pd-disaggregation.values.yaml`](../guides/pd-disaggregation/router/pd-disaggregation.values.yaml).
+> Verified by rendering against `llm-d-router-gateway:v0.9.0`: EPP image
+> `llm-d-router-endpoint-picker:v0.9.0`, InferencePool `…/v1`, no tokenizer
+> container. Config mirrors the stock
+> [`pd-disaggregation.values.yaml`](../guides/pd-disaggregation/router/pd-disaggregation.values.yaml)
+> (which uses `always-disagg-pd-decider`; `prefix-based-pd-decider` here only
+> disaggregates when the non-cached prefix exceeds `threshold`).
 
 Install (gateway mode):
 
@@ -251,14 +260,32 @@ vLLM source (`multi_connector.py`): the sub-connectors live under
 > alone. If it misbehaves, ship them un-composed: NIXL-only for P/D (drop CPU
 > offload), or a non-disaggregated tier that uses `OffloadingConnector` only.
 
-### 4.3 KV events (feeds the precise prefix-cache scorer)
+### 4.3 (Optional) PRECISE prefix routing upgrade
 
-```yaml
-- >-
-  --kv-events-config={"enable_kv_cache_events":true,"publisher":"zmq",
-  "endpoint":"tcp://${GUIDE_NAME}-epp.${NAMESPACE}.svc.cluster.local:5557",
-  "topic":"kv@$(POD_IP)@MiniMaxAI/MiniMax-M2.7"}
-```
+The default (§3) uses the **approximate** `prefix-cache-scorer` — no extra
+components. To switch to **precise** (exact KV-events) routing, follow
+[`precise-prefix-cache-routing`](../guides/precise-prefix-cache-routing/README.md),
+whose current shape is:
+
+1. **Render (tokenizer) Service** — deploy a standalone `vllm launch render`
+   Service (image `llm-d-uds-tokenizer:vllm-v0.23.0`, ~3 replicas). The tokenizer
+   is **no longer an EPP UDS sidecar** (that chart sidecar is off by default).
+2. **EPP plugins** — replace `prefix-cache-scorer` with `token-producer`
+   (`vllm.url` → the render Service), `endpoint-notification-source`,
+   `precise-prefix-cache-producer` (`discoverPods: true`, `podDiscoveryConfig.socketPort: 5556`),
+   plus a `prefix-cache-scorer` consumer referencing the producer.
+3. **Each model-server pod binds its own ZMQ socket** — add to the vLLM args:
+   ```yaml
+   - "--kv-events-config"
+   - '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"$(KV_EVENTS_ENDPOINT)","topic":"kv@$(POD_IP):$(POD_PORT)@MiniMaxAI/MiniMax-M2.7"}'
+   ```
+   with env `KV_EVENTS_ENDPOINT=tcp://*:5556`, `POD_PORT=8000`, and a
+   `containerPort: 5556` named `kv-events`. (The router discovers pods and
+   subscribes per-pod — there is **no** central EPP `:5557` endpoint.)
+
+> ⚠️ Composing **precise routing with P/D disaggregation** is not a shipped
+> combination (the precise guide ships a single `default` profile, no P/D). Treat
+> this as advanced and validate end-to-end.
 
 ### 4.4 Pin the sidecar image + apply
 
